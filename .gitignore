@@ -1,0 +1,25 @@
+# Environment secrets — never commit these
+.env
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Temp audio files
+temp_audio.*
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Reports (optional — remove this line if you want to track reports)
+reports/output.json
