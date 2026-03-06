@@ -60,18 +60,37 @@ st.divider()
 
 with st.sidebar:
     st.markdown("### ⚙️ Configuration")
-    sarvam_ok     = bool(os.getenv("SARVAM_API_KEY"))
-    openrouter_ok = bool(os.getenv("OPENROUTER_API_KEY"))
+
+    def _get_secret(key):
+        try:
+            return st.secrets[key]
+        except Exception:
+            return os.getenv(key, "")
+
+    sarvam_ok     = bool(_get_secret("SARVAM_API_KEY"))
+    openrouter_ok = bool(_get_secret("OPENROUTER_API_KEY"))
+
     st.markdown(f"**Sarvam API Key:** {'✅ Set' if sarvam_ok else '❌ Missing'}")
     st.markdown(f"**OpenRouter API Key:** {'✅ Set' if openrouter_ok else '❌ Missing'}")
     if not sarvam_ok or not openrouter_ok:
-        st.warning("Set your API keys in the `.env` file. See README for details.")
+        st.error("⚠️ API keys missing! Add them in Streamlit Cloud → Settings → Secrets.")
     st.divider()
     st.markdown("### 📋 Required Survey Topics")
     for t in ["age", "location", "voting", "government satisfaction"]:
         st.markdown(f"- `{t}`")
 
-uploaded = st.file_uploader("Drop your survey call audio here", type=["wav", "mp3"], label_visibility="visible")
+keys_missing = not sarvam_ok or not openrouter_ok
+
+uploaded = st.file_uploader(
+    "Drop your survey call audio here",
+    type=["wav", "mp3"],
+    label_visibility="visible",
+    disabled=keys_missing,
+)
+
+if keys_missing:
+    st.warning("🔑 Add your API keys in **Streamlit Cloud → App settings → Secrets** before uploading.")
+
 
 if uploaded:
     # Preserve original extension so MIME detection works
