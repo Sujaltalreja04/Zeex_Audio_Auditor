@@ -1,5 +1,8 @@
-streamlit
-requests
-python-dotenv
-pydub
-openai
+streamlit>=1.30.0
+faster-whisper>=1.0.0
+thefuzz>=0.20.0
+python-Levenshtein>=0.23.0
+sqlalchemy>=2.0.0
+requests>=2.31.0
+pandas>=2.0.0
+python-dotenv>=1.0.0

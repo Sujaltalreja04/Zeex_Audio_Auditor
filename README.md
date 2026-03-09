@@ -108,3 +108,31 @@ OPENROUTER_MODEL = "meta-llama/llama-3.2-11b-vision-instruct"
 - [ ] Vector database search for similar calls
 - [ ] Real-time call auditing via microphone stream
 - [ ] Batch processing of multiple call recordings
+
+---
+
+## 🚀 Deployment to Production (Streamlit Cloud)
+
+To deploy this app to **Streamlit Cloud**:
+
+### 1. Prepare your Repository
+Ensure the following files are in your root directory:
+- `app.py`: The entry point.
+- `requirements.txt`: Python dependencies.
+- `packages.txt`: System dependencies (`ffmpeg`).
+- `.streamlit/config.toml`: Custom theme and server settings.
+
+### 2. Configure Secrets
+On the Streamlit Cloud dashboard, go to **Settings > Secrets** and add your API keys:
+```toml
+SARVAM_API_KEY = "your_key_here"
+OPENROUTER_API_KEY = "your_key_here"
+```
+
+### 3. Deploy
+1. Push your code to a GitHub repository.
+2. Connect your GitHub account to [Streamlit Cloud](https://share.streamlit.io/).
+3. Select your repository and the `app.py` file.
+4. Click **Deploy**.
+
+> **Note on Persistence**: This app uses SQLite for history. On Streamlit Cloud, the disk is ephemeral; records will be cleared whenever the app reboots. For persistent storage, consider connecting a managed database like Supabase (Postgres).

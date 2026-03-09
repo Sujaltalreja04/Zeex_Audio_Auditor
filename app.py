@@ -1,6 +1,35 @@
-import json
-import os
 import streamlit as st
+import os
+import sys
+
+# --- Environment Setup ---
+import shutil
+
+# Make local ffmpeg available if it exists (for local dev)
+# On Streamlit Cloud, it will be in the system PATH via packages.txt
+cwd = os.getcwd()
+ffmpeg_local = os.path.join(cwd, "ffmpeg.exe")
+if os.path.exists(ffmpeg_local) and cwd not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = cwd + os.pathsep + os.environ.get("PATH", "")
+
+# Verify ffmpeg availability
+def check_ffmpeg():
+    return shutil.which("ffmpeg") is not None
+
+import json
+import pandas as pd
+import streamlit.components.v1 as components
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv() # Load local .env if it exists
+
+# Import our modules
+from pipeline.whisper_service import process_audio
+from pipeline.audit_logic import extract_and_verify
+from pipeline.sarvam_asr import speech_to_text
+from pipeline.llm_audit import extract_and_verify_llm
+from database import get_db, SurveyRecord
 
 st.set_page_config(
     page_title="ZeeX AI Audio Auditor",
@@ -9,560 +38,391 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Premium CSS ───────────────────────────────────────────────────────────────
+# Custom CSS for modern UI
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-html, body, [class*="css"], .stApp {
-    font-family: 'Inter', sans-serif !important;
-}
-
-/* ── Background ── */
-.stApp {
-    background: #07071a;
-    color: #e2e8f0;
-    min-height: 100vh;
-}
-
-/* Animated star-field gradient */
+html, body, [class*="css"], .stApp { font-family: 'Inter', sans-serif !important; }
+.stApp { background: #07071a; color: #e2e8f0; min-height: 100vh; }
 .stApp::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background:
-        radial-gradient(ellipse 80% 50% at 20% 10%, rgba(139,92,246,0.18) 0%, transparent 60%),
-        radial-gradient(ellipse 60% 40% at 80% 80%, rgba(59,130,246,0.15) 0%, transparent 60%),
-        radial-gradient(ellipse 40% 30% at 60% 30%, rgba(236,72,153,0.10) 0%, transparent 60%);
-    pointer-events: none;
-    z-index: 0;
+    content: ''; position: fixed; inset: 0;
+    background: radial-gradient(ellipse 80% 50% at 20% 10%, rgba(139,92,246,0.18) 0%, transparent 60%),
+                radial-gradient(ellipse 60% 40% at 80% 80%, rgba(59,130,246,0.15) 0%, transparent 60%);
+    pointer-events: none; z-index: 0;
 }
-
-/* ── Hide Streamlit chrome ── */
-#MainMenu, footer, header { visibility: hidden; }
-.block-container { padding: 2rem 3rem !important; position: relative; z-index: 1; }
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {
-    background: rgba(15, 15, 40, 0.95) !important;
-    border-right: 1px solid rgba(139,92,246,0.2) !important;
-    backdrop-filter: blur(20px);
-}
-[data-testid="stSidebar"] .block-container { padding: 2rem 1.5rem !important; }
-
-/* ── Animated header title ── */
 .hero-title {
-    font-size: clamp(2rem, 5vw, 3.5rem);
-    font-weight: 900;
-    line-height: 1.1;
+    font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 900; line-height: 1.1;
     background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 40%, #f472b6 80%, #a78bfa 100%);
-    background-size: 200% 200%;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    animation: gradientShift 4s ease infinite;
-    letter-spacing: -0.02em;
+    background-size: 200% 200%; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    animation: gradientShift 4s ease infinite; letter-spacing: -0.02em; text-align: center;
 }
-@keyframes gradientShift {
-    0%   { background-position: 0% 50%; }
-    50%  { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-}
-
-.hero-sub {
-    color: #94a3b8;
-    font-size: 1.05rem;
-    font-weight: 400;
-    margin-top: 0.6rem;
-    letter-spacing: 0.01em;
-}
-
-/* ── Glowing divider ── */
-.glow-divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(139,92,246,0.6), rgba(96,165,250,0.6), transparent);
-    margin: 1.5rem 0;
-    border: none;
-}
-
-/* ── Glass metric cards ── */
-.glass-card {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 20px;
-    padding: 1.4rem 1.6rem;
-    backdrop-filter: blur(16px);
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-    overflow: hidden;
-}
-.glass-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-}
-.glass-card:hover {
-    transform: translateY(-4px);
-    border-color: rgba(139,92,246,0.35);
-    box-shadow: 0 20px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(139,92,246,0.1);
-}
-
-.card-label {
-    font-size: 0.72rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #64748b;
-    margin-bottom: 0.5rem;
-}
-.card-value {
-    font-size: 1.9rem;
-    font-weight: 800;
-    color: #f1f5f9;
-    line-height: 1;
-}
-.card-sub {
-    font-size: 0.8rem;
-    color: #64748b;
-    margin-top: 0.4rem;
-}
-
-/* ── Progress bar ── */
-.prog-track {
-    height: 6px;
-    background: rgba(255,255,255,0.06);
-    border-radius: 99px;
-    margin-top: 0.8rem;
-    overflow: hidden;
-}
-.prog-fill {
-    height: 100%;
-    border-radius: 99px;
-    transition: width 1s ease;
-}
-
-/* ── Risk badge ── */
-.risk-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 1rem;
-    border-radius: 99px;
-    font-size: 0.82rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-}
-
-/* ── Authenticity banner ── */
-.auth-banner {
-    border-radius: 18px;
-    padding: 1.4rem 1.8rem;
-    display: flex;
-    align-items: center;
-    gap: 1.2rem;
-    margin: 1.2rem 0;
-    border: 1.5px solid;
-    position: relative;
-    overflow: hidden;
-}
-.auth-banner::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    opacity: 0.06;
-    background: linear-gradient(135deg, currentColor, transparent);
-}
-.auth-icon  { font-size: 2.2rem; line-height: 1; flex-shrink: 0; }
-.auth-label-sm { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: #64748b; }
-.auth-label-lg { font-size: 1.5rem; font-weight: 800; line-height: 1.2; }
-.auth-reason   { font-size: 0.85rem; color: #94a3b8; margin-top: 0.25rem; }
-
-/* ── Section header ── */
-.section-hdr {
-    font-size: 0.72rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    color: #7c3aed;
-    margin-bottom: 0.75rem;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-}
-
-/* ── Transcript box ── */
-.transcript-scroll {
-    background: rgba(0,0,0,0.4);
-    border: 1px solid rgba(139,92,246,0.2);
-    border-radius: 14px;
-    padding: 1.2rem 1.4rem;
-    font-size: 0.88rem;
-    line-height: 1.75;
-    max-height: 260px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    color: #cbd5e1;
-    font-family: 'Inter', monospace;
-}
-.transcript-scroll::-webkit-scrollbar { width: 4px; }
-.transcript-scroll::-webkit-scrollbar-track { background: transparent; }
-.transcript-scroll::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.4); border-radius: 99px; }
-
-/* ── Compliance tags ── */
-.tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3rem 0.85rem;
-    border-radius: 99px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    margin: 3px 4px;
-    border: 1px solid;
-}
-.tag-yes { background: rgba(0,200,83,0.1);  border-color: #00c853; color: #00c853; }
-.tag-no  { background: rgba(255,75,75,0.1); border-color: #ff4b4b; color: #ff4b4b; }
-
-/* ── Upload dropzone ── */
-section[data-testid="stFileUploadDropzone"] {
-    background: rgba(139,92,246,0.05) !important;
-    border: 2px dashed rgba(139,92,246,0.4) !important;
-    border-radius: 18px !important;
-    transition: all 0.2s ease;
-}
-section[data-testid="stFileUploadDropzone"]:hover {
-    border-color: rgba(139,92,246,0.8) !important;
-    background: rgba(139,92,246,0.08) !important;
-}
-
-/* ── Success/error overrides ── */
-div[data-testid="stMetricValue"] { color: #f1f5f9 !important; }
-[data-testid="stAlert"] { border-radius: 14px !important; }
-
-/* ── Download button ── */
-.stDownloadButton > button {
-    background: linear-gradient(135deg, #7c3aed, #3b82f6) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 12px !important;
-    padding: 0.7rem 2rem !important;
-    font-weight: 600 !important;
-    font-size: 0.9rem !important;
-    transition: all 0.2s ease !important;
-    box-shadow: 0 4px 20px rgba(124,58,237,0.4) !important;
-}
-.stDownloadButton > button:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 30px rgba(124,58,237,0.6) !important;
-}
-
-/* ── Spinner ── */
-.stSpinner { color: #a78bfa !important; }
-
-/* ── Sidebar items ── */
-.sidebar-status {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 10px;
-    padding: 0.6rem 0.9rem;
-    margin-bottom: 0.5rem;
-    font-size: 0.85rem;
-}
+@keyframes gradientShift { 0% {background-position: 0% 50%;} 50% {background-position: 100% 50%;} 100% {background-position: 0% 50%;} }
+.hero-sub { color: #94a3b8; font-size: 1.05rem; text-align: center; margin-top: 0.5rem; }
+.glass-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 1.5rem; backdrop-filter: blur(16px); }
+.score-match { color: #00c853; font-weight: bold; }
+.score-mismatch { color: #ff4b4b; font-weight: bold; }
+.score-missing { color: #facc15; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
+def show_confetti():
+    components.html(
+        """
+        <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+        <script>
+            var duration = 3 * 1000;
+            var animationEnd = Date.now() + duration;
+            var defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 0 };
+            function randomInRange(min, max) { return Math.random() * (max - min) + min; }
+            var interval = setInterval(function() {
+                var timeLeft = animationEnd - Date.now();
+                if (timeLeft <= 0) { return clearInterval(interval); }
+                var particleCount = 50 * (timeLeft / duration);
+                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 } }));
+                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 } }));
+            }, 250);
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
-# ── Helper: read secret ───────────────────────────────────────────────────────
-def _get_secret(key: str) -> str:
-    try:
-        return st.secrets[key]
-    except Exception:
-        return os.getenv(key, "")
+st.markdown('<div class="hero-title">🎙️ AI Audio Survey Auditor</div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-sub">Upload audio + Survey data to instantly verify authenticity via faster-whisper.</div>', unsafe_allow_html=True)
 
+# Pre-flight checks
+errors = []
+if not check_ffmpeg():
+    errors.append("❌ `ffmpeg` not found. Please ensure it is installed and in your PATH.")
+from config.settings import OPENROUTER_API_KEY
+if not OPENROUTER_API_KEY:
+    errors.append("❌ `OPENROUTER_API_KEY` is not set. Please add it to your secrets or .env file.")
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("""
-    <div style="margin-bottom:1.5rem;">
-        <p style="font-size:1.1rem; font-weight:800; color:#a78bfa; margin:0;">🎙️ ZeeX Auditor</p>
-        <p style="font-size:0.78rem; color:#475569; margin:0.2rem 0 0;">AI-powered call audit platform</p>
-    </div>
-    """, unsafe_allow_html=True)
+if errors:
+    for err in errors:
+        st.error(err)
+    if not check_ffmpeg():
+        st.info("💡 On Streamlit Cloud, ensure you have a `packages.txt` file with `ffmpeg` listed.")
+    st.stop()
 
-    sarvam_ok     = bool(_get_secret("SARVAM_API_KEY"))
-    openrouter_ok = bool(_get_secret("OPENROUTER_API_KEY"))
+st.markdown("<br>", unsafe_allow_html=True)
 
-    st.markdown(f"""
-    <div class="sidebar-status">
-        <span style="color:#94a3b8;">Sarvam ASR</span>
-        <span>{"✅" if sarvam_ok else "❌"}</span>
-    </div>
-    <div class="sidebar-status">
-        <span style="color:#94a3b8;">OpenRouter LLM</span>
-        <span>{"✅" if openrouter_ok else "❌"}</span>
-    </div>
-    """, unsafe_allow_html=True)
+tab_collect, tab_results, tab_history = st.tabs(["📝 Intake & Audit", "📊 Audit Results", "🗄️ History Database"])
 
-    if not sarvam_ok or not openrouter_ok:
-        st.error("API keys missing. Add them in **Streamlit Cloud → Settings → Secrets**.")
+if "current_audit" not in st.session_state:
+    st.session_state["current_audit"] = None
 
-    st.markdown('<hr class="glow-divider">', unsafe_allow_html=True)
-    st.markdown("""
-    <p style="font-size:0.72rem; font-weight:700; text-transform:uppercase;
-              letter-spacing:0.12em; color:#7c3aed; margin-bottom:0.6rem;">
-        📋 Required Topics
-    </p>
-    """, unsafe_allow_html=True)
+# ---- INTAKE ----
+with tab_collect:
+    st.markdown("### 1. Survey Data Form")
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            form_name = st.text_input("Full Name")
+            form_age = st.text_input("Age")
+            form_prof = st.text_input("Profession (e.g. Student, Business)")
+        with col2:
+            form_edu = st.text_input("Education Level (e.g. 10th, Graduate)")
+            form_dist = st.text_input("District / Location")
+            
+    st.markdown("### 2. Audio Evidence")
+    uploaded = st.file_uploader("Upload Survey Audio (.wav, .mp3, .m4a)", type=["wav", "mp3", "m4a"])
+    
+    if st.button("🚀 Run Full Audit", use_container_width=True, type="primary"):
+        if not uploaded:
+            st.error("Please upload an audio file.")
+        else:
+            with st.spinner("⚡ Processing audio via Whisper & auditing via OpenRouter LLM..."):
+                os.makedirs("temp_dir", exist_ok=True)
+                temp_path = os.path.join("temp_dir", uploaded.name)
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded.read())
+                
+                try:
+                    # 1. Process Audio with Whisper for accurate word timestamps
+                    audio_data = process_audio(temp_path)
+                    transcript = audio_data["transcript"]
+                    segments_list = audio_data.get("segments", [])
+                    
+                    # 2. Extract & Verify with OpenRouter (pass segments for accurate timestamps)
+                    form_data = {
+                        "Name": form_name, "Age": form_age, "Profession": form_prof,
+                        "Education": form_edu, "District": form_dist
+                    }
+                    audit_res = extract_and_verify_llm(form_data, transcript, segments_list)
+                    
+                    # Consolidate language detection
+                    whisper_lang = audio_data.get("language", "Unknown")
+                    llm_lang = audit_res.get("language", "Unknown")
+                    
+                    final_lang = whisper_lang
+                    if final_lang.lower() == "unknown" and llm_lang.lower() != "unknown":
+                        final_lang = llm_lang
+                    
+                    audit_res["detected_language"] = final_lang
+                    
+                    # 3. Save to DB
+                    db = next(get_db())
+                    record = SurveyRecord(
+                        name=form_name, age=form_age, profession=form_prof,
+                        education=form_edu, district=form_dist,
+                        transcript=transcript,
+                        result_json=json.dumps(audit_res),
+                        verdict=audit_res.get("verdict", "Missing Data")
+                    )
+                    db.add(record)
+                    db.commit()
+                    db.refresh(record)
+                    
+                    st.session_state["current_audit"] = {
+                        "transcript": transcript,
+                        "words": [],
+                        "audit": audit_res,
+                        "audio_bytes": uploaded.getvalue(),
+                        "audio_mime": uploaded.type,
+                        "language": final_lang
+                    }
+                    st.success("Audit completed! Go to the 'Audit Results' tab.")
+                    
+                    if audit_res.get("verdict", "Missing Data") == "Match":
+                        show_confetti()
+                        
+                except Exception as e:
+                    st.error(f"Error during processing: {e}")
+                finally:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
 
-    for topic in ["Age", "Location", "Voting", "Government Satisfaction"]:
-        st.markdown(f"""
-        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.35rem;
-                    font-size:0.83rem; color:#94a3b8;">
-            <span style="color:#7c3aed;">▸</span> {topic}
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown('<hr class="glow-divider">', unsafe_allow_html=True)
-    st.markdown("""
-    <p style="font-size:0.75rem; color:#334155; text-align:center;">
-        Powered by Sarvam AI + OpenRouter
-    </p>
-    """, unsafe_allow_html=True)
-
-
-# ── Hero header ───────────────────────────────────────────────────────────────
-st.markdown("""
-<div style="text-align:center; padding: 2.5rem 0 1.5rem;">
-    <p class="hero-title">🎙️ ZeeX AI Audio Auditor</p>
-    <p class="hero-sub">
-        Upload a survey call recording · Get instant transcription, fraud detection & authenticity verdict
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-st.markdown('<div class="glow-divider"></div>', unsafe_allow_html=True)
-
-# ── Upload ────────────────────────────────────────────────────────────────────
-keys_missing = not sarvam_ok or not openrouter_ok
-
-uploaded = st.file_uploader(
-    "Drop your survey call audio here (.wav or .mp3)",
-    type=["wav", "mp3"],
-    label_visibility="visible",
-    disabled=keys_missing,
-)
-
-if keys_missing:
-    st.markdown("""
-    <div style="text-align:center; margin-top:0.8rem; padding:1rem;
-                background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3);
-                border-radius:14px; color:#fca5a5; font-size:0.9rem;">
-        🔑 Add API keys in <strong>Streamlit Cloud → App settings → Secrets</strong> to enable uploads.
-    </div>
-    """, unsafe_allow_html=True)
-
-elif not uploaded:
-    st.markdown("""
-    <div style="text-align:center; padding:4rem 2rem; margin-top:1rem;
-                background:rgba(139,92,246,0.04);
-                border:2px dashed rgba(139,92,246,0.2);
-                border-radius:24px;">
-        <div style="font-size:3.5rem; margin-bottom:1rem;">🎧</div>
-        <p style="font-size:1.1rem; font-weight:600; color:#e2e8f0; margin-bottom:0.4rem;">
-            Ready to audit your survey call
-        </p>
-        <p style="color:#64748b; font-size:0.9rem;">
-            Supports <strong>.wav</strong> and <strong>.mp3</strong> · Up to 200MB
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ── Processing ────────────────────────────────────────────────────────────────
-if uploaded:
-    _, ext    = os.path.splitext(uploaded.name)
-    TEMP_PATH = f"temp_audio{ext.lower()}"
-
-    with open(TEMP_PATH, "wb") as f:
-        f.write(uploaded.read())
-
-    with st.spinner("⚡ Analysing call — transcribing, detecting fraud & running LLM…"):
-        try:
-            from pipeline.audio_pipeline import run_audit
-            result = run_audit(TEMP_PATH)
-        except Exception as e:
-            st.error(f"Pipeline error: {e}")
-            if os.path.exists(TEMP_PATH):
-                os.remove(TEMP_PATH)
-            st.stop()
-
-    if os.path.exists(TEMP_PATH):
-        os.remove(TEMP_PATH)
-
-    transcript    = result.get("transcript", "")
-    survey        = result.get("survey_compliance", {})
-    fraud_risk    = result.get("fraud_risk", "unknown")
-    agent_ratio   = result.get("agent_ratio", 0.0)
-    llm           = result.get("llm_analysis", {})
-
-    compliance    = survey.get("compliance_score", 0)
-    asked         = survey.get("asked", [])
-    missed        = survey.get("missed", [])
-
-    lang          = llm.get("language_detected", "—")
-    sentiment     = llm.get("respondent_sentiment", "—").capitalize()
-    quality       = llm.get("call_quality_score", 0)
-    summary       = llm.get("summary", llm.get("raw_response", "—"))
-    is_authentic  = llm.get("is_authentic", "—")
-    auth_reason   = llm.get("authenticity_reason", "")
-
-    st.markdown('<div class="glow-divider"></div>', unsafe_allow_html=True)
-
-    # ── KPI cards ─────────────────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-
-    # Compliance card
-    comp_color = "#00c853" if compliance >= 75 else "#ffa500" if compliance >= 50 else "#ff4b4b"
-    with c1:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="card-label">📋 Survey Compliance</div>
-            <div class="card-value" style="color:{comp_color};">{compliance}%</div>
-            <div class="prog-track">
-                <div class="prog-fill" style="width:{compliance}%;
-                     background:linear-gradient(90deg,{comp_color}88,{comp_color});"></div>
-            </div>
-            <div class="card-sub">{len(asked)} of {len(asked)+len(missed)} topics covered</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Fraud risk card
-    risk_cfg = {
-        "high":    ("#ff4b4b", "🔴", "rgba(255,75,75,0.15)"),
-        "medium":  ("#ffa500", "🟡", "rgba(255,165,0,0.15)"),
-        "low":     ("#00c853", "🟢", "rgba(0,200,83,0.15)"),
-        "unknown": ("#808080", "⚪", "rgba(128,128,128,0.15)"),
-    }
-    r_col, r_icon, r_bg = risk_cfg.get(fraud_risk, risk_cfg["unknown"])
-    with c2:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="card-label">🕵️ Fraud Risk</div>
-            <div style="display:flex; align-items:center; gap:0.6rem; margin-top:0.2rem;">
-                <span class="risk-pill" style="background:{r_bg}; border:1px solid {r_col}; color:{r_col};">
-                    {r_icon} {fraud_risk.upper()}
-                </span>
-            </div>
-            <div class="prog-track">
-                <div class="prog-fill" style="width:{int(agent_ratio*100)}%;
-                     background:linear-gradient(90deg,{r_col}88,{r_col});"></div>
-            </div>
-            <div class="card-sub">Agent talk ratio: {int(agent_ratio*100)}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Quality score card
-    q_color = "#00c853" if quality >= 75 else "#ffa500" if quality >= 50 else "#ff4b4b"
-    with c3:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="card-label">⭐ Call Quality</div>
-            <div class="card-value" style="color:{q_color};">{quality}<span style="font-size:1rem;color:#64748b;">/100</span></div>
-            <div class="prog-track">
-                <div class="prog-fill" style="width:{quality}%;
-                     background:linear-gradient(90deg,{q_color}88,{q_color});"></div>
-            </div>
-            <div class="card-sub">LLM quality assessment</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # Language & sentiment card
-    sent_emoji = {"positive": "😊", "neutral": "😐", "negative": "😟"}.get(sentiment.lower(), "💬")
-    with c4:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="card-label">🌐 Language & Sentiment</div>
-            <div class="card-value" style="font-size:1.3rem; margin-top:0.1rem;">{lang}</div>
-            <div style="margin-top:0.6rem; display:flex; align-items:center; gap:0.4rem;">
-                <span style="font-size:1.2rem;">{sent_emoji}</span>
-                <span style="font-size:0.9rem; color:#94a3b8;">{sentiment}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Authenticity banner ───────────────────────────────────────────────────
-    if is_authentic == "Authentic":
-        a_col, a_bg, a_icon, a_label = "#00c853", "rgba(0,200,83,0.08)", "✅", "AUTHENTIC"
+# ---- RESULTS ----
+with tab_results:
+    if st.session_state["current_audit"] is None:
+        st.info("Run an audit first to see results.")
     else:
-        a_col, a_bg, a_icon, a_label = "#ff4b4b", "rgba(255,75,75,0.08)", "🚨", "NOT AUTHENTIC"
+        res = st.session_state["current_audit"]
+        audit = res["audit"]
+        verdict = audit.get("verdict", "Error")
+        
+        st.markdown(f"### Final Verdict: <span style='color:{'#00c853' if verdict=='Match' else '#ff4b4b' if verdict=='Mismatch' else '#facc15'}'>{verdict}</span>", unsafe_allow_html=True)
+        
+        # Display Language
+        lang_source = audit.get("detected_language") or res.get("language") or "Unknown"
+        lang = lang_source.upper()
+        st.markdown(f"**Detected Language:** `{lang}`")
+        
+        st.markdown("### Scorecard Breakdown")
+        cols = st.columns(5)
+        details = audit["details"]
+        
+        for col, (k, v) in zip(cols, details.items()):
+            status = v['status']
+            color = "#00c853" if status == "Match" else "#ff4b4b" if status == "Mismatch" else "#facc15"
+            with col:
+                st.markdown(f"""
+                <div class="glass-card" style="text-align:center; padding:1rem;">
+                    <div style="font-size:0.9rem; color:#94a3b8;">{k}</div>
+                    <div style="font-size:1.2rem; font-weight:bold; color:{color};">{status}</div>
+                    <div style="font-size:0.8rem; color:#64748b; margin-top:0.4rem;">
+                        {"⏱️ " + str(v['timestamp']) + "s" if v['timestamp'] else "Not Found"}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+        st.markdown("---")
+        st.markdown("### Conversation Breakdown")
+        
+        # Build a custom HTML5 audio player with JS for precise timestamp playback
+        if "audio_bytes" in res:
+            import base64
+            audio_b64 = base64.b64encode(res["audio_bytes"]).decode("utf-8")
+            audio_mime = res.get("audio_mime", "audio/mp3")
+            
+            # Build conversation HTML with play buttons
+            conversation = audit.get("conversation", [])
+            convo_html = ""
+            for i, msg in enumerate(conversation):
+                speaker = msg.get("speaker", "Unknown")
+                text = msg.get("text", "")
+                timestamp = msg.get("timestamp", "")
+                
+                # Parse start-end
+                start_sec = 0
+                end_sec = 0
+                if timestamp and "-" in str(timestamp):
+                    try:
+                        parts = str(timestamp).replace("s","").split("-")
+                        start_sec = float(parts[0])
+                        end_sec = float(parts[1])
+                    except:
+                        pass
+                
+                # Format display time
+                def fmt_time(s):
+                    m = int(s) // 60
+                    sec = s - m * 60
+                    return f"{m}:{sec:04.1f}"
+                
+                time_display = f"{fmt_time(start_sec)} → {fmt_time(end_sec)}" if timestamp else ""
+                
+                is_suryeior = speaker.lower() in ["suryeior", "agent"]
+                speaker_label = "Suryeior" if is_suryeior else "Respondent"
+                bg = "rgba(139,92,246,0.15)" if is_suryeior else "rgba(59,130,246,0.1)"
+                avatar = "🤖" if is_suryeior else "🗣️"
+                border_color = "rgba(139,92,246,0.3)" if is_suryeior else "rgba(59,130,246,0.2)"
+                
+                convo_html += f"""
+                <div style="background:{bg}; border:1px solid {border_color}; border-radius:12px; padding:12px 16px; margin-bottom:10px;">
+                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                        <span style="font-size:1.3rem;">{avatar}</span>
+                        <span style="font-weight:700; color:{'#a78bfa' if is_suryeior else '#60a5fa'};">{speaker_label}</span>
+                        <span style="font-size:0.75rem; background:rgba(0,0,0,0.3); color:#94a3b8; padding:2px 8px; border-radius:6px; font-family:monospace;">⏱ {time_display}</span>
+                    </div>
+                    <div style="color:#e2e8f0; margin-left:36px; line-height:1.5;">{text}</div>
+                    <div style="margin-left:36px; margin-top:8px;">
+                        <button onclick="playSegment({start_sec}, {end_sec})" style="background:linear-gradient(135deg,#7c3aed,#3b82f6); color:white; border:none; padding:5px 14px; border-radius:8px; cursor:pointer; font-size:0.8rem; font-weight:600;">
+                            ▶ Play {time_display}
+                        </button>
+                    </div>
+                </div>
+                """
+            
+            # Full HTML component with audio element + JS
+            full_html = f"""
+            <div style="margin-bottom:16px;">
+                <audio id="auditAudioPlayer" controls style="width:100%; border-radius:8px;">
+                    <source src="data:{audio_mime};base64,{audio_b64}" type="{audio_mime}">
+                </audio>
+            </div>
+            {convo_html}
+            <script>
+                var stopTimer = null;
+                function playSegment(startSec, endSec) {{
+                    var audio = document.getElementById('auditAudioPlayer');
+                    if (!audio) return;
+                    if (stopTimer) clearTimeout(stopTimer);
+                    
+                    // Add 0.3s buffer at start and end for better context
+                    var paddedStart = Math.max(0, startSec - 0.3);
+                    var paddedEnd = endSec + 0.3;
+                    
+                    audio.currentTime = paddedStart;
+                    audio.play();
+                    
+                    var duration = (paddedEnd - paddedStart) * 1000;
+                    if (duration > 0) {{
+                        stopTimer = setTimeout(function() {{
+                            audio.pause();
+                        }}, duration);
+                    }}
+                }}
+            </script>
+            """
+            
+            # Calculate height based on number of conversation items
+            height = 120 + len(conversation) * 130
+            components.html(full_html, height=height, scrolling=True)
+        else:
+            conversation = audit.get("conversation", [])
+            if conversation:
+                for i, msg in enumerate(conversation):
+                    speaker = msg.get("speaker", "Unknown")
+                    text = msg.get("text", "")
+                    timestamp = msg.get("timestamp", "")
+                    time_badge = f" `[{timestamp}]`" if timestamp else ""
+                    if speaker.lower() in ["suryeior", "agent"]:
+                        with st.chat_message("user", avatar="🤖"):
+                            st.markdown(f"**Suryeior{time_badge}:** {text}")
+                    else:
+                        with st.chat_message("assistant", avatar="🗣️"):
+                            st.markdown(f"**Respondent{time_badge}:** {text}")
+            else:
+                st.info("No speaker breakdown available.")
 
-    st.markdown(f"""
-    <div class="auth-banner" style="background:{a_bg}; border-color:{a_col}; color:{a_col};">
-        <span class="auth-icon">{a_icon}</span>
-        <div>
-            <div class="auth-label-sm">Survey Authenticity Verdict</div>
-            <div class="auth-label-lg" style="color:{a_col};">{a_label}</div>
-            <div class="auth-reason">{auth_reason}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="glow-divider"></div>', unsafe_allow_html=True)
-
-    # ── Detail section ────────────────────────────────────────────────────────
-    left, right = st.columns([3, 2], gap="large")
-
-    with left:
-        st.markdown('<div class="section-hdr">📝 Transcript</div>', unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="transcript-scroll">{transcript or "No transcript available."}</div>',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-hdr">🤖 AI Summary</div>', unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("### Raw Translated Transcript")
         st.markdown(f"""
-        <div style="background:rgba(139,92,246,0.07); border:1px solid rgba(139,92,246,0.2);
-                    border-radius:14px; padding:1.1rem 1.3rem; font-size:0.9rem;
-                    line-height:1.7; color:#cbd5e1;">
-            {summary}
+        <div style="background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:1.2rem; max-height:200px; overflow-y:auto; font-family:monospace; line-height:1.6;">
+        {res['transcript']}
         </div>
         """, unsafe_allow_html=True)
 
-    with right:
-        st.markdown('<div class="section-hdr">📋 Survey Question Coverage</div>', unsafe_allow_html=True)
-        tags_html = ""
-        from pipeline.survey_checker import REQUIRED_QUESTIONS
-        for q in REQUIRED_QUESTIONS:
-            if q in asked:
-                tags_html += f'<span class="tag tag-yes">✔ {q.title()}</span>'
-            else:
-                tags_html += f'<span class="tag tag-no">✘ {q.title()}</span>'
-        st.markdown(f'<div style="line-height:2.2;">{tags_html}</div>', unsafe_allow_html=True)
+# ---- HISTORY ----
+with tab_history:
+    st.markdown("### Audit History DB")
+    
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("🗑️ Clear Database"):
+            db = next(get_db())
+            db.query(SurveyRecord).delete()
+            db.commit()
+            st.success("Database cleared.")
+            st.rerun()
+            
+    db = next(get_db())
+    records = db.query(SurveyRecord).order_by(SurveyRecord.created_at.desc()).all()
+    
+    if not records:
+        st.info("No records in database.")
+    else:
+        data = []
+        for r in records:
+                try:
+                    res_j = json.loads(r.result_json)
+                    # Try various possible keys for language
+                    lang_source = res_j.get("detected_language") or res_j.get("language") or "UNKNOWN"
+                    lang = str(lang_source).upper()
+                except:
+                    lang = "UNKNOWN"
+                    
+                data.append({
+                    "ID": r.id,
+                    "Date": r.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "Name": r.name,
+                    "Language": lang,
+                    "Verdict": r.verdict,
+                })
+        st.dataframe(pd.DataFrame(data), use_container_width=True)
+        
+        st.markdown("#### View/Delete specific record")
+        cols2 = st.columns(2)
+        with cols2[0]:
+            view_id = st.number_input("View Record ID", min_value=1, step=1)
+            if st.button("View Details"):
+                r_to_view = db.query(SurveyRecord).filter(SurveyRecord.id == view_id).first()
+                if r_to_view:
+                    try:
+                        audit_data = json.loads(r_to_view.result_json)
+                        st.markdown(f"**Verdict:** {r_to_view.verdict}")
+                        
+                        st.markdown("**Conversation Breakdown**")
+                        conversation = audit_data.get("conversation", [])
+                        if conversation:
+                            for msg in conversation:
+                                speaker = msg.get("speaker", "Unknown")
+                                text = msg.get("text", "")
+                                timestamp = msg.get("timestamp", "")
+                                time_badge = f" `[{timestamp}]`" if timestamp else ""
+                                if speaker.lower() in ["suryeior", "agent"]:
+                                    with st.chat_message("user", avatar="🤖"):
+                                        st.markdown(f"**Suryeior{time_badge}:** {text}")
+                                else:
+                                    with st.chat_message("assistant", avatar="🗣️"):
+                                        st.markdown(f"**Respondent{time_badge}:** {text}")
+                        else:
+                            st.info("No speaker breakdown available for this record.")
+                    except:
+                        st.error("Could not parse result JSON for this record.")
+                else:
+                    st.error("Record not found.")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-hdr">📊 Raw Audit Data</div>', unsafe_allow_html=True)
-        with st.expander("View full JSON", expanded=False):
-            st.json(result)
-
-    st.markdown('<div class="glow-divider"></div>', unsafe_allow_html=True)
-
-    # ── Download ──────────────────────────────────────────────────────────────
-    col_dl, _ = st.columns([1, 3])
-    with col_dl:
-        st.download_button(
-            label="⬇️ Download Audit Report",
-            data=json.dumps(result, indent=4, ensure_ascii=False),
-            file_name="zeex_audit_report.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+        with cols2[1]:
+            del_id = st.number_input("Delete Record ID", min_value=1, step=1)
+            if st.button("Delete Record"):
+                r_to_del = db.query(SurveyRecord).filter(SurveyRecord.id == del_id).first()
+                if r_to_del:
+                    db.delete(r_to_del)
+                    db.commit()
+                    st.success(f"Record {del_id} deleted.")
+                    st.rerun()
+                else:
+                    st.error("Record not found.")

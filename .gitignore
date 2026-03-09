@@ -23,3 +23,13 @@ Thumbs.db
 
 # Reports (optional — remove this line if you want to track reports)
 reports/output.json
+
+# Binaries
+ffmpeg.exe
+
+# Local Databases
+*.db
+
+# Temporary directories
+temp_dir/
+sample_audio/
